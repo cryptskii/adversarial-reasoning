@@ -134,7 +134,8 @@ print(json.dumps({
     fi
 
     local raw
-    raw=$(printf '%s' "$request_json" | curl -sf --max-time "$timeout_s" -d @- http://127.0.0.1:11434/api/generate 2>/dev/null || true)
+    printf '%s' "$request_json" > "$TMPDIR_WORK/ollama_request.json"
+    raw=$(curl -sf --max-time "$timeout_s" -d @"$TMPDIR_WORK/ollama_request.json" http://127.0.0.1:11434/api/generate 2>/dev/null || true)
 
     if [ -z "$raw" ]; then
         echo '{"status":"unavailable","survival":"unknown","issues":[],"hidden_assumptions_found":[],"edge_cases_tested":[],"overall_note":"Ollama call failed or timed out."}'
