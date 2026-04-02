@@ -17,26 +17,33 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CONFIG="$SCRIPT_DIR/config.json"
 
-# ─── Read config (lightweight JSON parsing via python) ───
 if [ ! -f "$CONFIG" ]; then
     echo '{"error":"No config.json found. Copy config.example.json to config.json and configure your backends."}' >&2
     exit 1
 fi
 
-# Read payload from stdin into temp file
-TMPFILE=$(mktemp /tmp/adversarial-critique.XXXXXX)
-trap 'rm -f "$TMPFILE" /tmp/adversarial-gemini.$$ /tmp/adversarial-ollama.$$ /tmp/adversarial-codex.$$' EXIT
-cat > "$TMPFILE"
+# ─── Temp files for safe data passing ───
+TMPDIR_WORK=$(mktemp -d /tmp/adversarial.XXXXXX)
+trap 'rm -rf "$TMPDIR_WORK"' EXIT
 
-if [ ! -s "$TMPFILE" ]; then
+PAYLOAD_FILE="$TMPDIR_WORK/payload.txt"
+SYSTEM_FILE="$TMPDIR_WORK/system.txt"
+USER_FILE="$TMPDIR_WORK/user.txt"
+GEMINI_FILE="$TMPDIR_WORK/gemini.json"
+OLLAMA_FILE="$TMPDIR_WORK/ollama.json"
+CODEX_FILE="$TMPDIR_WORK/codex.json"
+
+# Read payload from stdin
+cat > "$PAYLOAD_FILE"
+
+if [ ! -s "$PAYLOAD_FILE" ]; then
     echo '{"error":"No reasoning payload provided via stdin"}'
     exit 1
 fi
 
-PAYLOAD=$(cat "$TMPFILE")
-
 # ─── System prompt (shared across all backends) ───
-SYSTEM_PROMPT='You are an adversarial logic reviewer. Your ONLY job is to attack the reasoning you are given and find flaws. You are not helpful, not collaborative, not constructive. You are a hostile examiner trying to break the argument.
+cat > "$SYSTEM_FILE" <<'SYSPROMPT'
+You are an adversarial logic reviewer. Your ONLY job is to attack the reasoning you are given and find flaws. You are not helpful, not collaborative, not constructive. You are a hostile examiner trying to break the argument.
 
 For every claim, ask: Does this follow from the stated assumptions? Are there hidden assumptions? Does this break at edge cases? Is the conclusion stronger than evidence supports? Is it solving the actual question asked?
 
@@ -44,11 +51,20 @@ Classify every issue using EXACTLY one of these labels:
 false_premise, unsupported_assumption, invalid_inference, missing_constraint, boundary_condition_failure, contradiction_with_known_facts, internal_inconsistency, category_error, equivocation, overgeneralization, underspecified_claim, solves_adjacent_problem, locally_valid_globally_invalid, circular_reasoning, non_falsifiable, conclusion_too_strong
 
 Reply ONLY with valid JSON, no markdown fences, no explanation outside the JSON:
-{"survival":"survives|damaged|fatal","issues":[{"label":"<type>","target":"<claim>","critique":"<explanation>","severity":"fatal|serious|minor","counterexample":"<or null>"}],"hidden_assumptions_found":["..."],"edge_cases_tested":["..."],"overall_note":"weakest link"}'
+{"survival":"survives|damaged|fatal","issues":[{"label":"<type>","target":"<claim>","critique":"<explanation>","severity":"fatal|serious|minor","counterexample":"<or null>"}],"hidden_assumptions_found":["..."],"edge_cases_tested":["..."],"overall_note":"weakest link"}
+SYSPROMPT
 
-USER_PROMPT="Here is a structured reasoning attempt. Attack it. Find every flaw. Classify each one. If it genuinely survives your attack, say so — but your bias is toward finding problems, not confirming answers.
+# Build user prompt
+{
+    echo "Here is a structured reasoning attempt. Attack it. Find every flaw. Classify each one. If it genuinely survives your attack, say so — but your bias is toward finding problems, not confirming answers."
+    echo ""
+    cat "$PAYLOAD_FILE"
+} > "$USER_FILE"
 
-${PAYLOAD}"
+# ─── Config reader ───
+read_config() {
+    python3 -c "import json; c=json.load(open('$CONFIG')); print(c$1)" 2>/dev/null || echo "$2"
+}
 
 # ─── Strip markdown fences from model output ───
 strip_fences() {
@@ -57,11 +73,11 @@ strip_fences() {
 
 # ─── Gemini Flash ───
 call_gemini() {
-    local binary model timeout
-    binary=$(python3 -c "import json; c=json.load(open('$CONFIG')); print(c['critics']['gemini']['binary'])" 2>/dev/null || echo "")
-    model=$(python3 -c "import json; c=json.load(open('$CONFIG')); print(c['critics']['gemini']['model'])" 2>/dev/null || echo "gemini-2.5-flash")
-    timeout_s=$(python3 -c "import json; c=json.load(open('$CONFIG')); print(c['critics']['gemini'].get('timeout', 45))" 2>/dev/null || echo "45")
-    enabled=$(python3 -c "import json; c=json.load(open('$CONFIG')); print(c['critics']['gemini']['enabled'])" 2>/dev/null || echo "False")
+    local binary model timeout_s enabled
+    enabled=$(read_config "['critics']['gemini']['enabled']" "False")
+    binary=$(read_config "['critics']['gemini']['binary']" "")
+    model=$(read_config "['critics']['gemini']['model']" "gemini-2.5-flash")
+    timeout_s=$(read_config "['critics']['gemini'].get('timeout', 45)" "45")
 
     if [ "$enabled" != "True" ] || [ -z "$binary" ] || [ ! -x "$binary" ]; then
         echo '{"status":"disabled"}'
@@ -69,7 +85,7 @@ call_gemini() {
     fi
 
     local raw
-    raw=$(printf '%s' "$USER_PROMPT" | timeout "$timeout_s" "$binary" --no-sandbox -p "$SYSTEM_PROMPT" --model "$model" 2>/dev/null || true)
+    raw=$(cat "$USER_FILE" | timeout "$timeout_s" "$binary" --no-sandbox -p "$(cat "$SYSTEM_FILE")" --model "$model" 2>/dev/null || true)
 
     if [ -z "$raw" ]; then
         echo '{"status":"unavailable","survival":"unknown","issues":[],"hidden_assumptions_found":[],"edge_cases_tested":[],"overall_note":"Gemini was unavailable."}'
@@ -81,11 +97,11 @@ call_gemini() {
 
 # ─── Ollama (DeepSeek, Llama, Mistral, etc.) ───
 call_ollama() {
-    local binary model timeout_s
-    binary=$(python3 -c "import json; c=json.load(open('$CONFIG')); print(c['critics']['ollama']['binary'])" 2>/dev/null || echo "")
-    model=$(python3 -c "import json; c=json.load(open('$CONFIG')); print(c['critics']['ollama']['model'])" 2>/dev/null || echo "deepseek-r1:8b")
-    timeout_s=$(python3 -c "import json; c=json.load(open('$CONFIG')); print(c['critics']['ollama'].get('timeout', 60))" 2>/dev/null || echo "60")
-    enabled=$(python3 -c "import json; c=json.load(open('$CONFIG')); print(c['critics']['ollama']['enabled'])" 2>/dev/null || echo "False")
+    local binary model timeout_s enabled
+    enabled=$(read_config "['critics']['ollama']['enabled']" "False")
+    binary=$(read_config "['critics']['ollama']['binary']" "")
+    model=$(read_config "['critics']['ollama']['model']" "deepseek-r1:8b")
+    timeout_s=$(read_config "['critics']['ollama'].get('timeout', 60)" "60")
 
     if [ "$enabled" != "True" ] || [ -z "$binary" ]; then
         echo '{"status":"disabled"}'
@@ -98,21 +114,30 @@ call_ollama() {
         return
     fi
 
-    # Ollama API call (more reliable than CLI for structured output)
-    local raw
-    raw=$(curl -sf --max-time "$timeout_s" http://127.0.0.1:11434/api/generate \
-        -d "$(python3 -c "
-import json, sys
+    # Build request JSON safely via python reading from files
+    local request_json
+    request_json=$(python3 -c "
+import json
+system = open('$SYSTEM_FILE').read()
+user = open('$USER_FILE').read()
 print(json.dumps({
     'model': '$model',
-    'prompt': '''$SYSTEM_PROMPT\n\n$USER_PROMPT''',
+    'prompt': system + '\n\n' + user,
     'stream': False,
     'options': {'temperature': 0.3}
 }))
-" 2>/dev/null)" 2>/dev/null || true)
+" 2>/dev/null)
+
+    if [ -z "$request_json" ]; then
+        echo '{"status":"unavailable","survival":"unknown","issues":[],"hidden_assumptions_found":[],"edge_cases_tested":[],"overall_note":"Failed to build Ollama request."}'
+        return
+    fi
+
+    local raw
+    raw=$(printf '%s' "$request_json" | curl -sf --max-time "$timeout_s" -d @- http://127.0.0.1:11434/api/generate 2>/dev/null || true)
 
     if [ -z "$raw" ]; then
-        echo '{"status":"unavailable","survival":"unknown","issues":[],"hidden_assumptions_found":[],"edge_cases_tested":[],"overall_note":"Ollama call failed."}'
+        echo '{"status":"unavailable","survival":"unknown","issues":[],"hidden_assumptions_found":[],"edge_cases_tested":[],"overall_note":"Ollama call failed or timed out."}'
         return
     fi
 
@@ -130,10 +155,10 @@ print(json.dumps({
 
 # ─── Codex CLI (OpenAI) ───
 call_codex() {
-    local binary timeout_s
-    binary=$(python3 -c "import json; c=json.load(open('$CONFIG')); print(c['critics']['codex']['binary'])" 2>/dev/null || echo "")
-    timeout_s=$(python3 -c "import json; c=json.load(open('$CONFIG')); print(c['critics']['codex'].get('timeout', 60))" 2>/dev/null || echo "60")
-    enabled=$(python3 -c "import json; c=json.load(open('$CONFIG')); print(c['critics']['codex']['enabled'])" 2>/dev/null || echo "False")
+    local binary timeout_s enabled
+    enabled=$(read_config "['critics']['codex']['enabled']" "False")
+    binary=$(read_config "['critics']['codex']['binary']" "")
+    timeout_s=$(read_config "['critics']['codex'].get('timeout', 60)" "60")
 
     if [ "$enabled" != "True" ] || [ -z "$binary" ] || ! command -v "$binary" > /dev/null 2>&1; then
         echo '{"status":"disabled"}'
@@ -141,7 +166,7 @@ call_codex() {
     fi
 
     local raw
-    raw=$(printf '%s' "$USER_PROMPT" | timeout "$timeout_s" "$binary" exec --ephemeral -q "$SYSTEM_PROMPT" - 2>/dev/null || true)
+    raw=$(cat "$USER_FILE" | timeout "$timeout_s" "$binary" exec --ephemeral -q "$(cat "$SYSTEM_FILE")" - 2>/dev/null || true)
 
     if [ -z "$raw" ]; then
         echo '{"status":"unavailable","survival":"unknown","issues":[],"hidden_assumptions_found":[],"edge_cases_tested":[],"overall_note":"Codex CLI was unavailable."}'
@@ -156,15 +181,28 @@ GEMINI_RESULT=$(call_gemini)
 OLLAMA_RESULT=$(call_ollama)
 CODEX_RESULT=$(call_codex)
 
+# ─── Write results to files for safe python parsing ───
+printf '%s' "$GEMINI_RESULT" > "$GEMINI_FILE"
+printf '%s' "$OLLAMA_RESULT" > "$OLLAMA_FILE"
+printf '%s' "$CODEX_RESULT" > "$CODEX_FILE"
+
 # ─── Determine consensus ───
-python3 -c "
-import json, sys
+export TMPDIR_WORK
+python3 << 'CONSENSUS'
+import json, sys, os
+
+tmpdir = sys.argv[1] if len(sys.argv) > 1 else os.environ.get('TMPDIR_WORK', '/tmp')
 
 results = {}
-for name, raw in [('gemini', '''$GEMINI_RESULT'''), ('ollama', '''$OLLAMA_RESULT'''), ('codex', '''$CODEX_RESULT''')]:
+for name in ['gemini', 'ollama', 'codex']:
+    fpath = os.path.join(tmpdir, f'{name}.json')
     try:
+        with open(fpath) as f:
+            raw = f.read().strip()
+        if not raw:
+            continue
         parsed = json.loads(raw)
-        if parsed.get('status') in ('disabled', None) and 'survival' not in parsed:
+        if parsed.get('status') == 'disabled':
             continue
         results[name] = parsed
     except:
@@ -174,7 +212,6 @@ if not results:
     print(json.dumps({'error': 'No critics were available', 'critics': {}}))
     sys.exit(0)
 
-# Determine consensus
 survivals = [r.get('survival', 'unknown') for r in results.values() if r.get('status') != 'unavailable']
 survivals = [s for s in survivals if s != 'unknown']
 
@@ -201,4 +238,4 @@ output = {
     'critics_reporting': len(survivals)
 }
 print(json.dumps(output, indent=2))
-" 2>/dev/null || echo '{"error":"Failed to parse critic results"}'
+CONSENSUS
