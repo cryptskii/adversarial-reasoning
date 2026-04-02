@@ -2,7 +2,7 @@
 
 **Multi-model adversarial critique for AI reasoning.**
 
-A structured system that uses multiple AI models from different vendors to attack each other's reasoning — catching errors that single-model self-correction systematically misses.
+A structured system that uses independent AI models to attack reasoning — catching errors that single-model self-correction systematically misses.
 
 ## The Problem
 
@@ -12,7 +12,7 @@ The industry's current answer is "retry harder" — run the same model again, ma
 
 ## The Solution
 
-Use **multiple models from different vendors** as independent adversarial critics, with structured payloads and typed failure classification.
+Use **a different vendor's model** as an independent adversarial critic, with structured payloads and typed failure classification.
 
 ```
 ┌─────────────────────────────────┐
@@ -26,18 +26,17 @@ Use **multiple models from different vendors** as independent adversarial critic
                │ structured payload
                ▼
 ┌──────────────────────────────────┐
-│  Gemini Flash    │  DeepSeek R1  │
-│  (Google)        │  (local/Ollama)│
-│                  │               │
-│  Independent adversarial critics │
+│  Gemini Flash (Google)           │
+│                                  │
+│  Independent adversarial critic  │
 │  Different training data         │
 │  Different blind spots           │
 │  Typed failure classification    │
-└──────────┬───────┴───────┬──────┘
-           │               │
-           ▼               ▼
+└──────────────┬──────────────────┘
+               │
+               ▼
     ┌─────────────────────────────┐
-    │  Structured verdicts        │
+    │  Structured verdict         │
     │  survives / damaged / fatal │
     │  Typed failure labels       │
     │  Hidden assumptions found   │
@@ -48,50 +47,32 @@ Use **multiple models from different vendors** as independent adversarial critic
     ┌─────────────────────────────┐
     │  Final answer               │
     │  Incorporating independent  │
-    │  critique from all models   │
+    │  critique                   │
     └─────────────────────────────┘
 ```
 
-This is **not** model routing (picking the best model per request). This is **not** ensemble averaging. This is adversarial triangulation — multiple independent critics attacking the same reasoning from different angles, with structured failure classification that makes the critique actionable.
+This is **not** model routing (picking the best model per request). This is **not** ensemble averaging. This is adversarial triangulation — an independent critic attacking reasoning from a different angle, with structured failure classification that makes the critique actionable.
 
 ## How It Differs From Existing Tools
 
 | Feature | Copilot / Cursor / Codex | This System |
 |---------|--------------------------|-------------|
-| Models used | One per request | Multiple simultaneously |
-| Self-correction | Same model retries | Different models attack |
+| Models used | One per request | Builder + independent critic |
+| Self-correction | Same model retries | Different model attacks |
 | Failure classification | "Try again" | Typed labels (16 categories) |
 | Intervention protocol | Binary pass/fail | survives / damaged / fatal |
 | Blind spot coverage | Same as builder | Structurally independent |
-| Vendor lock-in | Single vendor | Multi-vendor by design |
 
 ## Quick Start
 
 ### Prerequisites
 
-You need at least one CLI model tool. More = more diverse critique.
-
-**Gemini CLI** (recommended first — most generous free tier):
+**Gemini CLI** (free — most generous free tier of any model CLI):
 ```bash
-# Install
-npm install -g @anthropic-ai/gemini-cli
-# or
-brew install gemini
+npm install -g @google/gemini-cli
 
-# Login (just needs a Google account — free)
+# Login (just needs a Google account)
 gemini auth login
-```
-
-**Ollama + DeepSeek R1** (recommended second — local, unlimited, different training):
-```bash
-# Install Ollama
-brew install ollama
-
-# Start the server
-ollama serve &
-
-# Pull DeepSeek R1 (reasoning-focused, ~5GB)
-ollama pull deepseek-r1:8b
 ```
 
 ### Installation
@@ -103,13 +84,13 @@ cd adversarial-reasoning
 # Make scripts executable
 chmod +x scripts/*.sh
 
-# Copy config and set your preferences
+# Copy config and set your Gemini path
 cp config.example.json config.json
 ```
 
 ### Configuration
 
-Edit `config.json` to specify which backends you have available:
+Edit `config.json` to point to your Gemini binary:
 
 ```json
 {
@@ -119,18 +100,12 @@ Edit `config.json` to specify which backends you have available:
       "binary": "/opt/homebrew/bin/gemini",
       "model": "gemini-2.5-flash",
       "timeout": 45
-    },
-    "ollama": {
-      "enabled": true,
-      "binary": "/usr/local/bin/ollama",
-      "model": "deepseek-r1:8b",
-      "timeout": 60
     }
-  },
-  "require_all_critics": false,
-  "min_critics": 1
+  }
 }
 ```
+
+To find your Gemini binary path: `which gemini`
 
 ### Usage
 
@@ -139,27 +114,31 @@ Pipe a structured reasoning payload to the critique script:
 ```bash
 cat <<'PAYLOAD' | ./scripts/adversarial-critique.sh
 QUESTION:
-Does Gödel's First Incompleteness Theorem apply to second-order PA?
+If you flip a fair coin 100 times and get heads every time,
+is the next flip more likely to be tails?
 
 POSITIVE CANDIDATE:
-No, because second-order PA is not effectively axiomatizable...
+No. Each flip is independent. P(heads) = 0.5 regardless of
+prior results. The gambler's fallacy incorrectly assumes dependence.
 
 ASSUMPTIONS:
-1. Gödel's theorem requires effective axiomatizability
-2. Second-order PA with standard semantics is categorical
-...
+1. The coin is fair (exactly 50/50)
+2. Each flip is independent
+3. The question asks about the NEXT flip, not the sequence
 
 REJECTED ALTERNATIVES:
-A: Yes Gödel applies — rejected because...
+A: Yes, tails is "due" — gambler's fallacy, rejected because
+independence means prior outcomes are irrelevant
 
 INFERENCE CHAIN:
-1. Theorem preconditions: consistent, effectively axiomatizable...
-2. Second-order PA: not effectively axiomatizable...
-...
+1. Fair coin means P(H) = P(T) = 0.5
+2. Independence means P(flip 101 | first 100) = P(flip 101)
+3. Prior outcomes do not change the probability
+4. Therefore P(heads on 101) = 0.5
 PAYLOAD
 ```
 
-The script returns structured JSON from each available critic:
+The script returns structured JSON:
 
 ```json
 {
@@ -168,24 +147,22 @@ The script returns structured JSON from each available critic:
       "survival": "fatal",
       "issues": [
         {
-          "label": "false_premise",
-          "target": "second-order PA is not effectively axiomatizable",
-          "critique": "The axiom system is finite and thus effectively axiomatizable. The argument confuses the axiom system with Th(N).",
+          "label": "unsupported_assumption",
+          "target": "The coin is fair (exactly 50/50)",
+          "critique": "100 consecutive heads is so improbable for a fair coin (1 in 2^100) that a rational Bayesian observer should question the fairness assumption itself, not take it as axiomatic.",
           "severity": "fatal",
           "counterexample": null
         }
       ],
-      "hidden_assumptions_found": ["Conflates axiom system with complete theory of standard model"],
-      "overall_note": "Core premise is wrong — the theorem does apply."
-    },
-    "deepseek": {
-      "survival": "damaged",
-      "issues": [...],
-      "overall_note": "..."
+      "hidden_assumptions_found": [
+        "The problem requires treating 'fair coin' as immune to empirical challenge from observed data."
+      ],
+      "overall_note": "The reasoning is sound only if the fairness premise is unchallengeable. The extreme observation destabilizes that premise."
     }
   },
   "consensus": "fatal",
-  "agreement": "partial"
+  "agreement": "unanimous",
+  "critics_reporting": 1
 }
 ```
 
@@ -193,18 +170,13 @@ The script returns structured JSON from each available critic:
 
 | Verdict | Meaning | Action |
 |---------|---------|--------|
-| `survives` | No issues found or only minor issues | Proceed with the answer |
-| `damaged` | Serious issues but potentially repairable | Address each issue, repair, re-critique |
-| `fatal` | Fundamental structural flaw | Return to construction, rebuild |
-
-When multiple critics are used:
-- **Both fatal** → High confidence the reasoning is broken
-- **Both survives** → High confidence the reasoning holds
-- **Disagreement** → Investigate the specific issues; the truth is usually in the details
+| `survives` | No issues found or only minor | Proceed with the answer |
+| `damaged` | Serious issues but repairable | Address each issue, repair |
+| `fatal` | Fundamental structural flaw | Rebuild from scratch |
 
 ## Payload Format
 
-The structured payload is what makes this work. Critics need the reasoning in a form they can actually attack.
+The structured payload is what makes this work. Critics need the reasoning in a form they can attack.
 
 ```
 QUESTION:
@@ -253,26 +225,36 @@ Every issue must be classified. No "this seems wrong" without a type.
 **Setup:** Claude built a 5-stage analysis arguing the backward induction is "self-defeating" because the conclusion restores conditions for surprise.
 
 **Gemini verdict: `damaged`**
-- `internal_inconsistency`: The argument describes the paradox's circular structure rather than resolving it. Saying "the conclusion feeds back" names the loop without escaping it.
+- `internal_inconsistency`: The argument describes the paradox's circular structure rather than resolving it.
 - `category_error`: Using the empirical Wednesday exam to refute a logical argument mixes categories.
 
-**Result:** Both critiques were substantive. The answer was revised to specify the *mechanism* of failure (premise consumption during induction) rather than just naming the circular structure. Narrower but more defensible.
+**Result:** Answer revised to specify the *mechanism* of failure (premise consumption during induction) rather than just naming the circular structure.
 
 ### Test 2: Gödel's Theorem and Second-Order Arithmetic
 
-**Setup:** Claude built an analysis arguing Gödel's theorem "doesn't apply" to second-order PA because it's "not effectively axiomatizable."
+**Setup:** Claude argued Gödel's theorem "doesn't apply" to second-order PA because it's "not effectively axiomatizable."
 
 **Gemini verdict: `fatal`**
-- `false_premise`: Second-order PA's axiom system is finite and thus effectively axiomatizable. The argument confuses the axiom system with the complete theory of the standard model Th(ℕ).
-- `category_error`: Conflating effective axiomatizability of the formal system with recursive enumerability of its semantic consequences.
+- `false_premise`: Second-order PA's axiom system is finite and thus effectively axiomatizable. The argument confuses the axiom system with Th(ℕ).
+- `category_error`: Conflating the formal system with its semantic consequences.
 
-**Result:** Gemini was right. The answer was fundamentally wrong — Gödel's theorem *does* apply to second-order PA as a formal system. Claude's original analysis had confused two distinct mathematical objects. No amount of self-correction would have caught this because the confusion was in Claude's understanding, not in the surface reasoning.
+**Result:** Gemini was right. The answer was fundamentally wrong — Gödel's theorem *does* apply. Claude had confused two distinct mathematical objects. No self-correction would have caught this.
 
-## Integration with Claude Code / Claude CLI
+### Test 3: Gambler's Fallacy (Coin Flip)
 
-If you use Claude Code with a skills system, drop the skill file into your skills directory:
+**Setup:** Claude gave the textbook answer — 100 heads doesn't affect flip 101, each flip is independent, gambler's fallacy.
+
+**Gemini verdict: `fatal`**
+- `unsupported_assumption`: 100 consecutive heads (probability 1 in 2^100) should cause a rational Bayesian to question the fairness assumption itself, not treat it as axiomatic.
+
+**Result:** Gemini found a hidden assumption in what most people consider a textbook correct answer. The "fair coin" premise was treated as definitional rather than as a hypothesis challengeable by evidence.
+
+## Integration with Claude Code
+
+Drop the skill file into your skills directory:
 
 ```bash
+mkdir -p /path/to/your/project/.claude/skills/adversarial-reasoning
 cp skill/SKILL.md /path/to/your/project/.claude/skills/adversarial-reasoning/SKILL.md
 cp scripts/adversarial-critique.sh /path/to/your/project/.claude/hooks/adversarial-critique.sh
 chmod +x /path/to/your/project/.claude/hooks/adversarial-critique.sh
@@ -280,28 +262,22 @@ chmod +x /path/to/your/project/.claude/hooks/adversarial-critique.sh
 
 The skill instructs Claude to call the script at Stage 6 (Resubmission to Critique) automatically.
 
-## Adding Your Own Backends
+## Adding More Backends
 
-The script is designed to be extended. Each backend is a function that takes a prompt and system message and returns JSON. To add a new one:
-
-1. Add a section to `config.json`
-2. Add a call function in `adversarial-critique.sh`
-3. The function must return the standard verdict JSON schema
-
-Any model with CLI access works: OpenAI Codex, Mistral, Llama via Ollama, Anthropic API via curl, etc.
+The script supports multiple critic backends. To add another model CLI, add a section to `config.json` and a call function in the script. Any model with CLI access works. The architecture is designed so critics are interchangeable — swap them, add them, remove them without changing the core workflow.
 
 ## Why This Works
 
-The structural advantage is **blind spot diversity**. Different models trained by different labs on different data with different RLHF pipelines have different failure modes. When Claude confuses an axiom system with the theory of its standard model, Gemini — trained differently — may not share that confusion. When Gemini misses a self-reference issue, DeepSeek — trained on different data with reasoning-specific objectives — might catch it.
+Different models trained by different labs on different data with different RLHF pipelines have different failure modes. When Claude confuses an axiom system with the theory of its standard model, Gemini — trained differently — doesn't share that confusion.
 
 This isn't about any individual model being "better." It's about the *combination* catching errors that any single model structurally cannot. The same principle behind code review, peer review, and adversarial legal proceedings: independent evaluation by parties with different perspectives.
 
 ## Limitations
 
-- **Shared blind spots still exist.** If all three models share a misconception about an obscure topic, cross-model critique won't save you.
-- **Local models are weaker.** An 8B parameter DeepSeek won't produce critique as sharp as Gemini Flash. The value is in diversity, not quality.
-- **Structured payloads require effort.** You have to formulate your reasoning clearly enough for the critics to attack it. This is also a feature — the act of structuring the payload often reveals problems.
-- **Not useful for trivial tasks.** Don't adversarial-critique "write me a for loop." The overhead isn't worth it for problems without hidden assumptions.
+- **Shared blind spots exist.** If both models share a misconception, cross-model critique won't catch it.
+- **Structured payloads require effort.** You have to formulate your reasoning clearly enough for the critic to attack. This is also a feature — structuring the payload often reveals problems on its own.
+- **Not useful for trivial tasks.** Don't adversarial-critique "write me a for loop."
+- **Dependent on critic availability.** Cloud-based critics can hit capacity limits. The script handles this gracefully (returns unavailable, consensus adjusts).
 
 ## License
 
@@ -313,4 +289,4 @@ The most valuable contributions are:
 1. **New test cases** — especially ones where the system fails or produces surprising results
 2. **New backend integrations** — more model diversity = more blind spot coverage
 3. **Failure mode documentation** — when does cross-model critique NOT help?
-4. **Payload format improvements** — better structured inputs = better structured critique
+4. **Payload format improvements** — better structured inputs = better critique

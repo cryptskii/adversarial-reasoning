@@ -5,19 +5,6 @@
       "binary": "/opt/homebrew/bin/gemini",
       "model": "gemini-2.5-flash",
       "timeout": 45
-    },
-    "ollama": {
-      "enabled": true,
-      "binary": "/usr/local/bin/ollama",
-      "model": "deepseek-r1:8b",
-      "timeout": 60
-    },
-    "codex": {
-      "enabled": false,
-      "binary": "codex",
-      "timeout": 60
     }
-  },
-  "require_all_critics": false,
-  "min_critics": 1
+  }
 }
