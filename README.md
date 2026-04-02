@@ -1,14 +1,14 @@
 # Adversarial Reasoning
 
-**Multi-model adversarial critique for AI reasoning.**
+**Multi model adversarial critique for AI reasoning.**
 
-A structured system that uses independent AI models to attack reasoning — catching errors that single-model self-correction systematically misses.
+A structured system that uses independent AI models to attack reasoning catching errors that single model self correction systematically misses.
 
 ## The Problem
 
 When an AI model checks its own work, it shares its own blind spots. Asking GPT to review GPT's reasoning, or Claude to critique Claude's logic, is like asking the person who wrote the bug to also find it. The critic has the same training biases, the same knowledge gaps, and the same failure modes as the builder.
 
-The industry's current answer is "retry harder" — run the same model again, maybe with chain-of-thought, maybe with a different temperature. This is self-correction, not verification. It's structurally incapable of catching errors the model is blind to.
+The industry's current answer is "retry harder" run the same model again, maybe with chain-of-thought, maybe with a different temperature. This is self correction, not verification. It's structurally incapable of catching errors the model is blind to.
 
 ## The Solution
 
@@ -51,7 +51,7 @@ Use **a different vendor's model** as an independent adversarial critic, with st
     └─────────────────────────────┘
 ```
 
-This is **not** model routing (picking the best model per request). This is **not** ensemble averaging. This is adversarial triangulation — an independent critic attacking reasoning from a different angle, with structured failure classification that makes the critique actionable.
+This is **not** model routing (picking the best model per request). This is **not** ensemble averaging. This is adversarial triangulation an independent critic attacking reasoning from a different angle, with structured failure classification that makes the critique actionable.
 
 ## How It Differs From Existing Tools
 
@@ -67,7 +67,7 @@ This is **not** model routing (picking the best model per request). This is **no
 
 ### Prerequisites
 
-**Gemini CLI** (free — most generous free tier of any model CLI):
+**Gemini CLI** (free most generous free tier of any model CLI):
 ```bash
 npm install -g @google/gemini-cli
 
